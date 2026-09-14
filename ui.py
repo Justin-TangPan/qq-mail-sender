@@ -4,9 +4,10 @@ import threading
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 from pathlib import Path
+from io import BytesIO
 
 from config import load_config, save_config, is_configured, get_config_path
-from sender import send_email, build_subject, build_body
+from sender import send_email, send_content_email, build_subject, build_body
 
 # 尝试导入 tkinterdnd2 以支持拖放
 try:
@@ -14,6 +15,13 @@ try:
     HAS_DND = True
 except ImportError:
     HAS_DND = False
+
+# 尝试导入 Pillow 以支持剪贴板图片
+try:
+    from PIL import Image, ImageGrab, ImageTk
+    HAS_PIL = True
+except ImportError:
+    HAS_PIL = False
 
 
 class ConfigDialog:
@@ -118,6 +126,218 @@ class ConfigDialog:
         self.win.destroy()
 
 
+class ContentTab:
+    """文本/图片发送标签页"""
+
+    def __init__(self, parent, app: "MainApp"):
+        self.app = app
+        self.frame = ttk.Frame(parent)
+        self.pasted_image = None  # PIL.Image 对象
+        self._photo = None  # 保持 PhotoImage 引用防止被回收
+
+        self._build_ui()
+
+    def _build_ui(self):
+        """构建文本/图片标签页界面"""
+        # 按钮工具栏
+        toolbar = ttk.Frame(self.frame)
+        toolbar.pack(fill=tk.X, padx=8, pady=(8, 4))
+
+        ttk.Button(toolbar, text="📋 粘贴图片", command=self._paste_image, width=12).pack(
+            side=tk.LEFT
+        )
+        ttk.Button(toolbar, text="❌ 清空", command=self._clear_all, width=10).pack(
+            side=tk.LEFT, padx=5
+        )
+        ttk.Button(toolbar, text="📤 发送", command=self._send, width=10).pack(
+            side=tk.RIGHT
+        )
+
+        # 文本输入区
+        text_frame = ttk.LabelFrame(self.frame, text="文本内容（可粘贴文字）", padding=4)
+        text_frame.pack(fill=tk.BOTH, expand=True, padx=8, pady=4)
+
+        self.text_widget = tk.Text(text_frame, wrap=tk.WORD, font=("", 11), undo=True)
+        text_scroll = ttk.Scrollbar(text_frame, command=self.text_widget.yview)
+        self.text_widget.configure(yscrollcommand=text_scroll.set)
+        text_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self.text_widget.pack(fill=tk.BOTH, expand=True)
+
+        # 绑定粘贴事件：Ctrl+V 时先检查剪贴板是否有图片
+        self.text_widget.bind("<<Paste>>", self._on_paste)
+        self.text_widget.bind("<Control-v>", self._on_paste)
+
+        # 图片预览区
+        img_frame = ttk.LabelFrame(self.frame, text="图片预览", padding=4)
+        img_frame.pack(fill=tk.X, padx=8, pady=(4, 8))
+
+        self.img_label = tk.Label(
+            img_frame,
+            text="（无图片）\n截图后按 Ctrl+V 粘贴，或点击「粘贴图片」按钮",
+            fg="#999999",
+            justify=tk.CENTER,
+            height=4,
+        )
+        self.img_label.pack(fill=tk.X)
+
+        if not HAS_PIL:
+            self.img_label.config(
+                text="⚠ 未安装 Pillow，无法粘贴图片\n请运行: pip install Pillow",
+                fg="#CC0000",
+            )
+
+    def _on_paste(self, event):
+        """Ctrl+V 粘贴：优先检查剪贴板图片，无图片则正常粘贴文本"""
+        if HAS_PIL:
+            try:
+                img = ImageGrab.grabclipboard()
+                if img is not None and isinstance(img, Image.Image):
+                    self._set_image(img)
+                    return "break"  # 阻止默认文本粘贴
+            except Exception:
+                pass
+        # 没有图片，正常粘贴文本（不阻止默认行为）
+        return None
+
+    def _paste_image(self):
+        """从剪贴板粘贴图片"""
+        if not HAS_PIL:
+            messagebox.showwarning("提示", "未安装 Pillow，无法读取剪贴板图片。\n请运行: pip install Pillow")
+            return
+
+        try:
+            img = ImageGrab.grabclipboard()
+        except Exception as e:
+            messagebox.showerror("错误", f"读取剪贴板失败: {e}")
+            return
+
+        if img is None:
+            messagebox.showinfo("提示", "剪贴板中没有图片。\n请先截图（Win+Shift+S）或复制图片。")
+            return
+
+        if not isinstance(img, Image.Image):
+            messagebox.showinfo("提示", "剪贴板中的内容不是图片。")
+            return
+
+        self._set_image(img)
+
+    def _set_image(self, img: "Image.Image"):
+        """设置当前图片并显示预览"""
+        self.pasted_image = img
+        w, h = img.size
+
+        # 等比缩放生成预览（最大 400x160）
+        max_w, max_h = 400, 160
+        ratio = min(max_w / w, max_h / h, 1.0)
+        preview = img.resize((int(w * ratio), int(h * ratio)), Image.LANCZOS)
+        self._photo = ImageTk.PhotoImage(preview)
+
+        self.img_label.config(
+            image=self._photo,
+            text=f"✅ 已粘贴图片 ({w}x{h})",
+            compound=tk.TOP,
+            fg="#008800",
+            height=0,
+        )
+        self.app.status_var.set(f"已粘贴图片 ({w}x{h})，可输入文本后点击发送")
+
+    def _clear_all(self):
+        """清空文本和图片"""
+        self.text_widget.delete("1.0", tk.END)
+        self.pasted_image = None
+        self._photo = None
+        self.img_label.config(
+            image="",
+            text="（无图片）\n截图后按 Ctrl+V 粘贴，或点击「粘贴图片」按钮",
+            fg="#999999",
+            compound=tk.NONE,
+            height=4,
+        )
+        self.app.status_var.set("已清空")
+
+    def _send(self):
+        """发送文本/图片内容"""
+        config = load_config()
+
+        if not is_configured(config):
+            messagebox.showwarning("提示", "请先配置邮箱信息！", parent=self.app.root)
+            self.app._show_config()
+            return
+
+        text_content = self.text_widget.get("1.0", tk.END).strip()
+        has_image = self.pasted_image is not None
+
+        if not text_content and not has_image:
+            messagebox.showinfo("提示", "请输入文本或粘贴图片后再发送！", parent=self.app.root)
+            return
+
+        # 构建主题
+        prefix = config.get("subject_prefix", "文件分享: ")
+        if has_image and text_content:
+            subject = f"{prefix}文本及图片"
+        elif has_image:
+            subject = f"{prefix}图片分享"
+        else:
+            subject = f"{prefix}文本分享"
+
+        # 图片转 bytes
+        image_bytes = None
+        if has_image:
+            buf = BytesIO()
+            # 统一转为 RGB 避免格式问题
+            img = self.pasted_image
+            if img.mode == "RGBA":
+                # PNG 保留透明通道
+                img.save(buf, format="PNG")
+                image_bytes = buf.getvalue()
+            else:
+                img.save(buf, format="PNG")
+                image_bytes = buf.getvalue()
+
+        # 如果不自动发送，弹出确认
+        if not config.get("auto_send", True):
+            parts = []
+            if text_content:
+                preview_text = text_content[:50] + "..." if len(text_content) > 50 else text_content
+                parts.append(f"文本: {preview_text}")
+            if has_image:
+                parts.append(f"图片: {self.pasted_image.size[0]}x{self.pasted_image.size[1]}")
+            confirm = messagebox.askyesno(
+                "确认发送",
+                f"将发送以下内容到 {config['receiver_email']}:\n\n" + "\n".join(parts) + "\n\n确认发送？",
+                parent=self.app.root,
+            )
+            if not confirm:
+                return
+
+        # 设置发送中状态
+        self.app._set_status_sending_content(text_content, has_image)
+
+        # 在后台线程中发送
+        thread = threading.Thread(
+            target=self._send_in_thread,
+            args=(config, subject, text_content, image_bytes),
+            daemon=True,
+        )
+        thread.start()
+
+    def _send_in_thread(self, config: dict, subject: str, text_content: str, image_bytes: bytes | None):
+        """在后台线程中发送内容邮件"""
+        result = send_content_email(
+            sender_email=config["sender_email"],
+            auth_code=config["auth_code"],
+            receiver_email=config["receiver_email"],
+            subject=subject,
+            text_content=text_content,
+            image_bytes=image_bytes,
+        )
+        self.app.root.after(0, self.app._on_send_complete, result)
+
+    def reset_status(self):
+        """重置标签页状态显示"""
+        pass
+
+
 class MainApp:
     """主应用窗口"""
 
@@ -129,15 +349,15 @@ class MainApp:
             self.root = tk.Tk()
 
         self.root.title("QQ邮箱一键发送")
-        self.root.geometry("500x320")
+        self.root.geometry("560x440")
         self.root.resizable(True, True)
 
         # 居中显示
         self.root.update_idletasks()
         sw = self.root.winfo_screenwidth()
         sh = self.root.winfo_screenheight()
-        x = (sw - 500) // 2
-        y = (sh - 320) // 2
+        x = (sw - 560) // 2
+        y = (sh - 440) // 2
         self.root.geometry(f"+{x}+{y}")
 
         self._build_ui()
@@ -166,12 +386,16 @@ class MainApp:
             side=tk.RIGHT
         )
 
-        # 拖放区域
-        drop_frame = ttk.LabelFrame(self.root, text="拖入文件发送", padding=10)
-        drop_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        # 选项卡
+        self.notebook = ttk.Notebook(self.root)
+        self.notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        # --- 标签页 1: 文件发送 ---
+        file_tab = ttk.Frame(self.notebook)
+        self.notebook.add(file_tab, text="📁 文件发送")
 
         self.drop_label = tk.Label(
-            drop_frame,
+            file_tab,
             text="📁\n\n将文件拖放到此处\n即可自动发送邮件\n\n（也支持点击上方「选择文件」按钮）",
             font=("", 14),
             fg="#666666",
@@ -181,11 +405,15 @@ class MainApp:
         self.drop_label.pack(fill=tk.BOTH, expand=True)
         self.drop_label.bind("<Button-1>", lambda e: self._select_files())
 
+        # --- 标签页 2: 文本/图片 ---
+        self.content_tab = ContentTab(self.notebook, self)
+        self.notebook.add(self.content_tab.frame, text="📝 文本/图片")
+
         # 状态栏
         status_frame = ttk.Frame(self.root)
         status_frame.pack(fill=tk.X, padx=10, pady=(0, 8))
 
-        self.status_var = tk.StringVar(value="就绪 - 请拖入文件或点击选择文件")
+        self.status_var = tk.StringVar(value="就绪 - 请拖入文件或切换到文本/图片标签页")
         self.status_label = ttk.Label(
             status_frame, textvariable=self.status_var, foreground="#333333"
         )
@@ -315,6 +543,17 @@ class MainApp:
         self.status_label.config(foreground="#CC8800")
         self.drop_label.config(fg="#CC8800", text="⏳\n\n正在发送中...\n请稍候")
 
+    def _set_status_sending_content(self, text_content: str, has_image: bool):
+        """设置文本/图片发送中状态"""
+        parts = []
+        if text_content:
+            parts.append("文本")
+        if has_image:
+            parts.append("图片")
+        desc = " + ".join(parts)
+        self.status_var.set(f"⏳ 正在发送{desc} ...")
+        self.status_label.config(foreground="#CC8800")
+
     def _on_send_complete(self, result: dict):
         """发送完成回调"""
         if result["success"]:
@@ -336,7 +575,7 @@ class MainApp:
         self.root.after(
             5000,
             lambda: (
-                self.status_var.set("就绪 - 请拖入文件或点击选择文件"),
+                self.status_var.set("就绪 - 请拖入文件或切换到文本/图片标签页"),
                 self.status_label.config(foreground="#333333"),
                 self.drop_label.config(
                     fg="#666666",

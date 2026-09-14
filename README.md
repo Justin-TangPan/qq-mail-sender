@@ -16,6 +16,7 @@
 
 - 🖱️ **拖放发送** — 将文件拖入窗口即可自动发送，无需额外操作
 - 📎 **多文件支持** — 可同时拖入多个文件作为附件
+- 📝 **粘贴发送** — 支持粘贴文本或图片（截图后 Ctrl+V），直接作为邮件内容发送
 - ⚙️ **应用内配置** — 图形界面配置邮箱信息，无需手动编辑文件
 - 📌 **窗口置顶** — 可选保持窗口在最前面，方便反复拖入
 - 🔒 **本地存储** — 配置信息保存在本地，不上传任何数据
@@ -44,6 +45,7 @@
 ```bash
 # 确保已安装 Python 3.8+
 pip install tkinterdnd2  # 可选，用于拖放支持
+pip install Pillow       # 可选，用于粘贴图片支持
 python main.py
 ```
 
@@ -59,6 +61,7 @@ python main.py
 
 - 将文件拖放到窗口区域 → 自动发送
 - 或点击 **选择文件** 按钮手动选择
+- 切换到 **文本/图片** 标签页，可粘贴文字或截图（Ctrl+V）直接发送
 - 发送成功后窗口会显示绿色提示，5秒后自动恢复
 
 ## 📦 自行打包
@@ -71,6 +74,7 @@ pip install pyinstaller
 # 打包为单文件 exe
 pyinstaller --onefile --windowed --name "QQ邮箱一键发送" \
     --hidden-import tkinterdnd2 \
+    --hidden-import PIL.ImageGrab \
     main.py
 ```
 
@@ -115,6 +119,11 @@ qq-mail-sender/
 ### 拖放不生效
 - 安装 `tkinterdnd2`: `pip install tkinterdnd2`
 - 或使用 **选择文件** 按钮代替拖放
+
+### 粘贴图片不生效
+- 安装 Pillow: `pip install Pillow`
+- 确保剪贴板中有图片（如用 Win+Shift+S 截图）
+- 或点击「粘贴图片」按钮手动粘贴
 
 ### 附件过大
 - QQ 邮箱单封邮件附件上限约 50MB
