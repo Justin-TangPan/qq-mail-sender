@@ -78,7 +78,7 @@ class ConfigDialog:
         # 自动发送选项
         self.auto_send_var = tk.BooleanVar(value=config.get("auto_send", True))
         ttk.Checkbutton(
-            main_frame, text="拖入文件后自动发送（无需确认）", variable=self.auto_send_var
+            main_frame, text="发送前不弹出确认对话框", variable=self.auto_send_var
         ).grid(row=4, column=0, columnspan=2, sticky=tk.W, pady=10)
 
         # 按钮区域
@@ -127,7 +127,7 @@ class ConfigDialog:
 
 
 class ContentTab:
-    """文本/图片发送标签页"""
+    """图文内容发送标签页"""
 
     def __init__(self, parent, app: "MainApp"):
         self.app = app
@@ -138,7 +138,7 @@ class ContentTab:
         self._build_ui()
 
     def _build_ui(self):
-        """构建文本/图片标签页界面"""
+        """构建图文内容标签页界面"""
         # 按钮工具栏
         toolbar = ttk.Frame(self.frame)
         toolbar.pack(fill=tk.X, padx=8, pady=(8, 4))
@@ -153,8 +153,8 @@ class ContentTab:
             side=tk.RIGHT
         )
 
-        # 文本输入区
-        text_frame = ttk.LabelFrame(self.frame, text="文本内容（可粘贴文字）", padding=4)
+        # 图文输入区
+        text_frame = ttk.LabelFrame(self.frame, text="图文内容（可粘贴文字）", padding=4)
         text_frame.pack(fill=tk.BOTH, expand=True, padx=8, pady=4)
 
         self.text_widget = tk.Text(text_frame, wrap=tk.WORD, font=("", 11), undo=True)
@@ -167,18 +167,18 @@ class ContentTab:
         self.text_widget.bind("<<Paste>>", self._on_paste)
         self.text_widget.bind("<Control-v>", self._on_paste)
 
-        # 图片预览区
-        img_frame = ttk.LabelFrame(self.frame, text="图片预览", padding=4)
+        # 图片预览区（固定高度，防止图片无法显示）
+        img_frame = ttk.LabelFrame(self.frame, text="图片预览", padding=4, height=180)
         img_frame.pack(fill=tk.X, padx=8, pady=(4, 8))
+        img_frame.pack_propagate(False)
 
         self.img_label = tk.Label(
             img_frame,
             text="（无图片）\n截图后按 Ctrl+V 粘贴，或点击「粘贴图片」按钮",
             fg="#999999",
             justify=tk.CENTER,
-            height=4,
         )
-        self.img_label.pack(fill=tk.X)
+        self.img_label.pack(fill=tk.BOTH, expand=True)
 
         if not HAS_PIL:
             self.img_label.config(
@@ -226,8 +226,8 @@ class ContentTab:
         self.pasted_image = img
         w, h = img.size
 
-        # 等比缩放生成预览（最大 400x160）
-        max_w, max_h = 400, 160
+        # 等比缩放生成预览（最大 480x150）
+        max_w, max_h = 480, 150
         ratio = min(max_w / w, max_h / h, 1.0)
         preview = img.resize((int(w * ratio), int(h * ratio)), Image.LANCZOS)
         self._photo = ImageTk.PhotoImage(preview)
@@ -237,7 +237,6 @@ class ContentTab:
             text=f"✅ 已粘贴图片 ({w}x{h})",
             compound=tk.TOP,
             fg="#008800",
-            height=0,
         )
         self.app.status_var.set(f"已粘贴图片 ({w}x{h})，可输入文本后点击发送")
 
@@ -251,12 +250,11 @@ class ContentTab:
             text="（无图片）\n截图后按 Ctrl+V 粘贴，或点击「粘贴图片」按钮",
             fg="#999999",
             compound=tk.NONE,
-            height=4,
         )
         self.app.status_var.set("已清空")
 
     def _send(self):
-        """发送文本/图片内容"""
+        """发送图文内容"""
         config = load_config()
 
         if not is_configured(config):
@@ -284,15 +282,8 @@ class ContentTab:
         image_bytes = None
         if has_image:
             buf = BytesIO()
-            # 统一转为 RGB 避免格式问题
-            img = self.pasted_image
-            if img.mode == "RGBA":
-                # PNG 保留透明通道
-                img.save(buf, format="PNG")
-                image_bytes = buf.getvalue()
-            else:
-                img.save(buf, format="PNG")
-                image_bytes = buf.getvalue()
+            self.pasted_image.save(buf, format="PNG")
+            image_bytes = buf.getvalue()
 
         # 如果不自动发送，弹出确认
         if not config.get("auto_send", True):
@@ -333,10 +324,6 @@ class ContentTab:
         )
         self.app.root.after(0, self.app._on_send_complete, result)
 
-    def reset_status(self):
-        """重置标签页状态显示"""
-        pass
-
 
 class MainApp:
     """主应用窗口"""
@@ -349,7 +336,7 @@ class MainApp:
             self.root = tk.Tk()
 
         self.root.title("QQ邮箱一键发送")
-        self.root.geometry("560x440")
+        self.root.geometry("560x460")
         self.root.resizable(True, True)
 
         # 居中显示
@@ -357,8 +344,10 @@ class MainApp:
         sw = self.root.winfo_screenwidth()
         sh = self.root.winfo_screenheight()
         x = (sw - 560) // 2
-        y = (sh - 440) // 2
+        y = (sh - 460) // 2
         self.root.geometry(f"+{x}+{y}")
+
+        self.queued_files: list[str] = []
 
         self._build_ui()
         self._setup_dnd()
@@ -382,10 +371,6 @@ class MainApp:
             toolbar, text="窗口置顶", variable=self.topmost_var, command=self._toggle_topmost
         ).pack(side=tk.LEFT, padx=10)
 
-        ttk.Button(toolbar, text="选择文件", command=self._select_files, width=10).pack(
-            side=tk.RIGHT
-        )
-
         # 选项卡
         self.notebook = ttk.Notebook(self.root)
         self.notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
@@ -394,26 +379,60 @@ class MainApp:
         file_tab = ttk.Frame(self.notebook)
         self.notebook.add(file_tab, text="📁 文件发送")
 
+        # 拖放提示
         self.drop_label = tk.Label(
             file_tab,
-            text="📁\n\n将文件拖放到此处\n即可自动发送邮件\n\n（也支持点击上方「选择文件」按钮）",
-            font=("", 14),
+            text="📁 拖入文件到下方列表，或点击「选择文件」按钮添加",
+            font=("", 10),
             fg="#666666",
             justify=tk.CENTER,
             cursor="hand2",
+            height=2,
         )
-        self.drop_label.pack(fill=tk.BOTH, expand=True)
+        self.drop_label.pack(fill=tk.X, padx=4, pady=(4, 2))
         self.drop_label.bind("<Button-1>", lambda e: self._select_files())
 
-        # --- 标签页 2: 文本/图片 ---
+        # 文件列表
+        list_frame = ttk.Frame(file_tab)
+        list_frame.pack(fill=tk.BOTH, expand=True, padx=4, pady=2)
+
+        self.file_listbox = tk.Listbox(
+            list_frame, font=("", 10), selectmode=tk.EXTENDED, activestyle="underline"
+        )
+        list_scroll = ttk.Scrollbar(list_frame, command=self.file_listbox.yview)
+        self.file_listbox.configure(yscrollcommand=list_scroll.set)
+        list_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self.file_listbox.pack(fill=tk.BOTH, expand=True)
+
+        # 空列表提示
+        self._update_file_listbox()
+
+        # 文件操作按钮
+        file_btn_frame = ttk.Frame(file_tab)
+        file_btn_frame.pack(fill=tk.X, padx=4, pady=(2, 4))
+
+        ttk.Button(file_btn_frame, text="📂 选择文件", command=self._select_files, width=12).pack(
+            side=tk.LEFT, padx=2
+        )
+        ttk.Button(file_btn_frame, text="➖ 移除选中", command=self._remove_selected_files, width=12).pack(
+            side=tk.LEFT, padx=2
+        )
+        ttk.Button(file_btn_frame, text="❌ 清空列表", command=self._clear_file_queue, width=12).pack(
+            side=tk.LEFT, padx=2
+        )
+        ttk.Button(file_btn_frame, text="📤 发送", command=self._send_queued_files, width=10).pack(
+            side=tk.RIGHT, padx=2
+        )
+
+        # --- 标签页 2: 图文内容 ---
         self.content_tab = ContentTab(self.notebook, self)
-        self.notebook.add(self.content_tab.frame, text="📝 文本/图片")
+        self.notebook.add(self.content_tab.frame, text="📝 图文内容")
 
         # 状态栏
         status_frame = ttk.Frame(self.root)
         status_frame.pack(fill=tk.X, padx=10, pady=(0, 8))
 
-        self.status_var = tk.StringVar(value="就绪 - 请拖入文件或切换到文本/图片标签页")
+        self.status_var = tk.StringVar(value="就绪 - 请拖入文件或切换到图文内容标签页")
         self.status_label = ttk.Label(
             status_frame, textvariable=self.status_var, foreground="#333333"
         )
@@ -432,35 +451,26 @@ class MainApp:
         if HAS_DND:
             self.drop_label.drop_target_register(DND_FILES)
             self.drop_label.dnd_bind("<<Drop>>", self._on_drop)
-        else:
-            # 无拖放支持时更新提示文字
-            current_text = self.drop_label.cget("text")
-            self.drop_label.config(
-                text=current_text.replace("将文件拖放到此处\n即可自动发送邮件\n\n", "")
-                + "\n\n（拖放支持未启用，请点击选择文件）"
-            )
+            self.file_listbox.drop_target_register(DND_FILES)
+            self.file_listbox.dnd_bind("<<Drop>>", self._on_drop)
 
     def _on_drop(self, event):
         """处理拖放事件"""
-        # tkinterdnd2 返回的文件路径格式: 多文件用空格分隔，路径有空格时用 {} 包裹
         raw = event.data
         file_paths = self._parse_dnd_files(raw)
         if file_paths:
-            self._process_files(file_paths)
+            self._add_files(file_paths)
 
     def _parse_dnd_files(self, raw: str) -> list[str]:
         """解析拖放的文件路径"""
         paths = []
-        # 处理 Windows 路径格式
         i = 0
         while i < len(raw):
             if raw[i] == "{":
-                # 找到对应的 }
                 end = raw.index("}", i)
                 paths.append(raw[i + 1 : end])
-                i = end + 2  # 跳过 } 和空格
+                i = end + 2
             else:
-                # 找到下一个空格或结尾
                 end = raw.find(" ", i)
                 if end == -1:
                     end = len(raw)
@@ -469,7 +479,6 @@ class MainApp:
                     paths.append(path)
                 i = end + 1
 
-        # 过滤：只保留存在的文件
         valid = []
         for p in paths:
             p = p.strip()
@@ -485,16 +494,65 @@ class MainApp:
             parent=self.root,
         )
         if file_paths:
-            self._process_files(list(file_paths))
+            self._add_files(list(file_paths))
 
-    def _process_files(self, file_paths: list[str]):
-        """处理文件：发送邮件"""
+    def _add_files(self, file_paths: list[str]):
+        """添加文件到发送队列"""
+        added = 0
+        for p in file_paths:
+            if p not in self.queued_files:
+                self.queued_files.append(p)
+                added += 1
+        self._update_file_listbox()
+        if added:
+            self.status_var.set(f"已添加 {added} 个文件到列表（共 {len(self.queued_files)} 个）")
+            self.status_label.config(foreground="#333333")
+
+    def _remove_selected_files(self):
+        """移除列表中选中的文件"""
+        selection = self.file_listbox.curselection()
+        if not selection:
+            messagebox.showinfo("提示", "请先在列表中选中要移除的文件", parent=self.root)
+            return
+        # 从后往前删，避免索引错位
+        for idx in sorted(selection, reverse=True):
+            del self.queued_files[idx]
+        self._update_file_listbox()
+        self.status_var.set(f"已移除，列表剩余 {len(self.queued_files)} 个文件")
+
+    def _clear_file_queue(self):
+        """清空文件列表"""
+        if not self.queued_files:
+            return
+        self.queued_files.clear()
+        self._update_file_listbox()
+        self.status_var.set("已清空文件列表")
+
+    def _update_file_listbox(self):
+        """刷新文件列表显示"""
+        self.file_listbox.delete(0, tk.END)
+        if not self.queued_files:
+            self.file_listbox.insert(tk.END, "（列表为空，拖入文件或点击「选择文件」添加）")
+            self.file_listbox.config(fg="#999999")
+        else:
+            self.file_listbox.config(fg="#333333")
+            for i, p in enumerate(self.queued_files, 1):
+                self.file_listbox.insert(tk.END, f"{i}. {Path(p).name}")
+
+    def _send_queued_files(self):
+        """发送列表中所有文件"""
         config = load_config()
 
         if not is_configured(config):
             messagebox.showwarning("提示", "请先配置邮箱信息！", parent=self.root)
             self._show_config()
             return
+
+        if not self.queued_files:
+            messagebox.showinfo("提示", "文件列表为空，请先添加文件！", parent=self.root)
+            return
+
+        file_paths = list(self.queued_files)
 
         # 构建邮件内容
         subject = build_subject(config["subject_prefix"], file_paths)
@@ -530,7 +588,6 @@ class MainApp:
             body=body,
             file_paths=file_paths,
         )
-        # 在主线程中更新状态
         self.root.after(0, self._on_send_complete, result)
 
     def _set_status_sending(self, file_paths: list[str]):
@@ -541,10 +598,9 @@ class MainApp:
             names += f" 等{count}个文件"
         self.status_var.set(f"⏳ 正在发送: {names} ...")
         self.status_label.config(foreground="#CC8800")
-        self.drop_label.config(fg="#CC8800", text="⏳\n\n正在发送中...\n请稍候")
 
     def _set_status_sending_content(self, text_content: str, has_image: bool):
-        """设置文本/图片发送中状态"""
+        """设置图文内容发送中状态"""
         parts = []
         if text_content:
             parts.append("文本")
@@ -559,28 +615,20 @@ class MainApp:
         if result["success"]:
             self.status_var.set(f"✅ {result['message']} ({result['time']:.1f}s)")
             self.status_label.config(foreground="#008800")
-            self.drop_label.config(
-                fg="#008800",
-                text=f"✅\n\n发送成功!\n{result['message']}\n\n继续拖入文件发送",
-            )
+            # 发送成功后清空文件列表
+            if self.queued_files:
+                self.queued_files.clear()
+                self._update_file_listbox()
         else:
             self.status_var.set(f"❌ {result['message']}")
             self.status_label.config(foreground="#CC0000")
-            self.drop_label.config(
-                fg="#CC0000",
-                text=f"❌\n\n发送失败\n{result['message']}\n\n拖入文件重试",
-            )
 
         # 5秒后恢复默认状态
         self.root.after(
             5000,
             lambda: (
-                self.status_var.set("就绪 - 请拖入文件或切换到文本/图片标签页"),
+                self.status_var.set("就绪 - 请拖入文件或切换到图文内容标签页"),
                 self.status_label.config(foreground="#333333"),
-                self.drop_label.config(
-                    fg="#666666",
-                    text="📁\n\n将文件拖放到此处\n即可自动发送邮件\n\n（也支持点击上方「选择文件」按钮）",
-                ),
             ),
         )
 
