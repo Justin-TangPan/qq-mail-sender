@@ -153,6 +153,11 @@ class ContentTab:
             side=tk.RIGHT
         )
 
+        # 反馈提示条
+        self.feedback_var = tk.StringVar(value="")
+        self.feedback_label = tk.Label(self.frame, textvariable=self.feedback_var, font=("", 10), fg="#333333")
+        self.feedback_label.pack(fill=tk.X, padx=8, pady=(0, 2))
+
         # 图文输入区
         text_frame = ttk.LabelFrame(self.frame, text="图文内容（可粘贴文字）", padding=4)
         text_frame.pack(fill=tk.BOTH, expand=True, padx=8, pady=4)
@@ -252,6 +257,7 @@ class ContentTab:
             compound=tk.NONE,
         )
         self.app.status_var.set("已清空")
+        self.feedback_var.set("")
 
     def _send(self):
         """发送图文内容"""
@@ -303,6 +309,8 @@ class ContentTab:
 
         # 设置发送中状态
         self.app._set_status_sending_content(text_content, has_image)
+        self.feedback_var.set("⏳ 正在发送...")
+        self.feedback_label.config(fg="#CC8800")
 
         # 在后台线程中发送
         thread = threading.Thread(
@@ -322,7 +330,27 @@ class ContentTab:
             text_content=text_content,
             image_bytes=image_bytes,
         )
-        self.app.root.after(0, self.app._on_send_complete, result)
+        self.app.root.after(0, self._on_content_send_complete, result)
+
+    def _on_content_send_complete(self, result: dict):
+        """图文内容发送完成回调"""
+        if result["success"]:
+            msg = f"✅ {result['message']} ({result['time']:.1f}s)"
+            self.feedback_var.set(msg)
+            self.feedback_label.config(fg="#008800")
+            self.app.status_var.set(msg)
+            self.app.status_label.config(foreground="#008800")
+            messagebox.showinfo("发送成功", result["message"], parent=self.app.root)
+        else:
+            msg = f"❌ {result['message']}"
+            self.feedback_var.set(msg)
+            self.feedback_label.config(fg="#CC0000")
+            self.app.status_var.set(msg)
+            self.app.status_label.config(foreground="#CC0000")
+            messagebox.showerror("发送失败", result["message"], parent=self.app.root)
+
+        # 5秒后清空反馈提示
+        self.app.root.after(5000, lambda: self.feedback_var.set(""))
 
 
 class MainApp:
@@ -613,15 +641,19 @@ class MainApp:
     def _on_send_complete(self, result: dict):
         """发送完成回调"""
         if result["success"]:
-            self.status_var.set(f"✅ {result['message']} ({result['time']:.1f}s)")
+            msg = f"✅ {result['message']} ({result['time']:.1f}s)"
+            self.status_var.set(msg)
             self.status_label.config(foreground="#008800")
             # 发送成功后清空文件列表
             if self.queued_files:
                 self.queued_files.clear()
                 self._update_file_listbox()
+            messagebox.showinfo("发送成功", result["message"], parent=self.root)
         else:
-            self.status_var.set(f"❌ {result['message']}")
+            msg = f"❌ {result['message']}"
+            self.status_var.set(msg)
             self.status_label.config(foreground="#CC0000")
+            messagebox.showerror("发送失败", result["message"], parent=self.root)
 
         # 5秒后恢复默认状态
         self.root.after(
